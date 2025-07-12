@@ -7,4 +7,5 @@ seaborn
 xgboost
 pytorch-tabnet
 openpyxl
-ollama
+requests
+python-dotenv

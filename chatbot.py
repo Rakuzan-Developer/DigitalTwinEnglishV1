@@ -1,33 +1,83 @@
-import ollama
-from config import SECTOR_LIST, PRODUCT_TYPES, PRODUCT_CATEGORIES, PROMOTIONS
+import requests
+import os
+from dotenv import load_dotenv
 
-def parse_with_ollama(user_input):
+load_dotenv()
+
+MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
+MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
+
+# PROMOTIONS listesini buraya da çekiyoruz (main.py'de import ettiğin için çakışmaz, burada da tanımlanabilir)
+PROMOTIONS = [
+    "Cashback", "Low Interest", "Free EFT", "Loyalty Points", "High Limit", "Digital Convenience",
+    "Early Payment", "Extra Campaign", "Fast Approval", "Low Commission", "Extra Bonus", "Free Insurance"
+]
+
+def parse_with_mistral(user_input):
     prompt = f"""
-You are a financial product assistant. Analyze the following product/campaign description and extract these fields as a valid Python dictionary with only field names as keys:
-- segment (choose from: Individual, SME, Corporate)
-- sector (choose from: {SECTOR_LIST})
-- product_type (choose from: {PRODUCT_TYPES})
-- product_category (choose from: {PRODUCT_CATEGORIES})
-- promotion (choose from: {PROMOTIONS})
-- channel (Digital, Branch, Both)
-- term (integer, in months)
-- interest_type (Fixed, Variable, None)
-- risk_level (High, Medium, Low)
-- innovation_level (High, Medium, Low)
-- launch_year (integer)
-If a field is not mentioned, use None or an empty list.
+Given the following product/campaign description, extract ALL below filters and output ONLY a valid Python dictionary, even if some fields are empty (use [] for empty lists, '' for empty strings, and 0 for integers). Use these exact keys:
+- segment (list: Individual, SME, Corporate)
+- sector (list)
+- product_type (string)
+- product_category (string)
+- promotion (list, select from: {PROMOTIONS})
+- channel (string)
+- term (int, months)
+- interest_type (string: Fixed, Variable, None)
+- risk_level (string: High, Medium, Low)
+- innovation_level (string: High, Medium, Low)
+- launch_year (int)
+Example output:
+{{'segment': ['Individual'], 'sector': ['Retail'], 'product_type': 'Loan', 'product_category': 'Consumer', 'promotion': ['Cashback', 'Loyalty Points'], 'channel': 'Digital', 'term': 12, 'interest_type': 'Fixed', 'risk_level': 'Medium', 'innovation_level': 'High', 'launch_year': 2023}}
+If any field is missing in the input, fill it with the appropriate empty value as shown above.
 
-Description: \"\"\"{user_input}\"\"\"
-Return only the valid Python dictionary, no explanation.
+Text:
+{user_input}
+Output:
 """
-    response = ollama.generate(
-        model="llama3",  # or your preferred local model
-        prompt=prompt,
-        stream=False
-    )
-    import ast
+    headers = {
+        "Authorization": f"Bearer {MISTRAL_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "mistral-small-latest",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "max_tokens": 600
+    }
+    response = requests.post(MISTRAL_API_URL, headers=headers, json=data)
+    if response.status_code != 200:
+        raise Exception(f"API error: {response.status_code} {response.text}")
+    content = response.json()['choices'][0]['message']['content']
     try:
-        parsed_fields = ast.literal_eval(response['response'].strip())
+        result = eval(content.strip())
     except Exception:
-        parsed_fields = {}
-    return parsed_fields
+        import re
+        dict_text = re.findall(r'\{.*\}', content, re.DOTALL)
+        if dict_text:
+            try:
+                result = eval(dict_text[0])
+            except Exception:
+                result = {}
+        else:
+            result = {}
+
+    # Fallback - tüm alanları doldur
+    defaults = {
+        'segment': [],
+        'sector': [],
+        'product_type': '',
+        'product_category': '',
+        'promotion': [],
+        'channel': '',
+        'term': 0,
+        'interest_type': '',
+        'risk_level': '',
+        'innovation_level': '',
+        'launch_year': 0,
+    }
+    for k, v in defaults.items():
+        if k not in result:
+            result[k] = v
+
+    return result

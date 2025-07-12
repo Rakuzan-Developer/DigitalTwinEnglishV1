@@ -25,3 +25,4 @@ PROMOTIONS = [
     "Cashback", "Low Interest", "Free EFT", "Loyalty Points", "High Limit", "Digital Convenience",
     "Early Payment", "Extra Campaign", "Fast Approval", "Low Commission", "Extra Bonus", "Free Insurance"
 ]
+
