@@ -1,5 +1,3 @@
-# config.py
-
 SECTOR_LIST = [
     'Construction', 'Textile', 'Food', 'Automotive', 'Electricity', 'Tourism',
     'E-Commerce', 'Healthcare', 'Agriculture', 'Information Technology', 'Energy', 'Logistics', 'Finance', 'Retail'

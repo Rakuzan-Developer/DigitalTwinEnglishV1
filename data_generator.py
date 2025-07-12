@@ -1,11 +1,8 @@
-# data_generator.py
-# Generates dummy customer and transaction data, supports sampling for large datasets and fast demo generation.
-
 import numpy as np
 import pandas as pd
 from config import SECTOR_LIST, INDIVIDUAL_CATEGORIES, CATEGORY_LIST
 
-def generate_customers(n_individual=10000, n_sme=2000, n_corporate=1000, seed=42):
+def generate_customers(n_individual=650, n_sme=220, n_corporate=130, seed=42):
     np.random.seed(seed)
     individual_df = pd.DataFrame({
         'customer_id': [f'INDIVIDUAL_{i+1}' for i in range(n_individual)],
@@ -40,9 +37,8 @@ def generate_customers(n_individual=10000, n_sme=2000, n_corporate=1000, seed=42
     return df_customers
 
 def generate_transactions(df_customers, months=6, max_sample=20000):
-    # For large data, only create transactions for first N customers (to protect memory in demo)
     if len(df_customers) > max_sample:
-        print(f"WARNING: Transactions are generated for only the first {max_sample} customers (for demo)!")
+        print(f"WARNING: Transactions generated only for first {max_sample} customers (demo optimization)!")
         df_customers = df_customers.sample(n=max_sample, random_state=42)
     category_list = CATEGORY_LIST
     transaction_list = []

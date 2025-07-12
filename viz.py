@@ -32,20 +32,6 @@ def plot_sector_heatmap(df):
         st.pyplot(fig)
         st.dataframe(sec_pivot)
 
-def plot_scatter_interest(df):
-    if len(df) > 3000:
-        sample_df = df.sample(n=3000, random_state=42)
-    else:
-        sample_df = df
-    fig, ax = plt.subplots(figsize=(7, 4))
-    sns.scatterplot(
-        data=sample_df, x='digital_openness', y='product_interest_probability',
-        hue='twin_response', alpha=0.6, ax=ax, palette="Set2"
-    )
-    ax.set_title("Digital Openness vs. Product Interest")
-    plt.tight_layout()
-    st.pyplot(fig)
-
 def plot_pie_twin_response(df):
     response_counts = df['twin_response'].value_counts().reindex(
         ['apply/purchase', 'high interest', 'medium interest', 'neutral', 'negative response'], fill_value=0
@@ -62,3 +48,4 @@ def plot_segment_interest_heatmap(df):
     sns.heatmap(pivot, annot=True, fmt=".2f", cmap="YlGnBu", ax=ax)
     ax.set_title("Segment/Response-based Mean Product Interest Score")
     st.pyplot(fig)
+
