@@ -1,6 +1,3 @@
-# utils.py
-# Handles caching and pickle operations to prevent unnecessary recomputation
-
 import streamlit as st
 import pickle
 

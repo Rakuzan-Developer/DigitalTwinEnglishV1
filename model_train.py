@@ -1,6 +1,3 @@
-# model_train.py
-# Functions for product interest prediction using machine learning and deep learning
-
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 import xgboost as xgb
@@ -23,15 +20,13 @@ def get_features_targets(df):
     return X, y, feature_cols
 
 def train_model(df, model_name="RandomForest", max_sample=8000):
-    # Train model on a sample, but compute proba for the entire df
     if len(df) > max_sample:
         df_sample = df.sample(n=max_sample, random_state=42)
     else:
         df_sample = df
-    X_full, y_full, _ = get_features_targets(df)           # For prediction (all data)
-    X, y, _ = get_features_targets(df_sample)               # For training
+    X_full, y_full, _ = get_features_targets(df)
+    X, y, _ = get_features_targets(df_sample)
     if len(np.unique(y)) < 2:
-        # Only one class, return same probability for all
         return np.ones(len(df))
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.15, random_state=42)
     if model_name == "RandomForest":
