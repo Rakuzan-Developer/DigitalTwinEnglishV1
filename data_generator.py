@@ -1,3 +1,5 @@
+#data_generator.py
+
 import numpy as np
 import pandas as pd
 from config import SECTOR_LIST, INDIVIDUAL_CATEGORIES, CATEGORY_LIST
