@@ -4,250 +4,276 @@ import numpy as np
 
 from config import SECTOR_LIST, INDIVIDUAL_CATEGORIES, PRODUCT_TYPES, PRODUCT_CATEGORIES, PROMOTIONS
 from data_generator import generate_customers, generate_transactions
-from features import aggregate_transactions
+from features import aggregate_transactions, product_effect_score
 from model_train import train_model
 from viz import (
-    plot_twin_distribution, plot_segment_heatmap, plot_sector_heatmap,
-    plot_pie_twin_response, plot_segment_interest_heatmap
+    plot_pie_twin_response, plot_twin_distribution, plot_segment_heatmap,
+    plot_sector_heatmap, plot_segment_interest_heatmap
 )
 from chatbot import parse_with_mistral
 
 st.set_page_config(page_title="Digital Twin & AI Customer Simulation Demo", layout="wide")
 st.title("Enterprise-scale Digital Twin & AI Segmentation Demo")
 
-# ----------- Normalization Functions -----------
+st.sidebar.header("Test Mode")
+test_mode = st.sidebar.radio("Choose test type:", ["Single Scenario", "A/B Test"])
 
-def normalize_list_value(val_list, valid_list):
-    if isinstance(val_list, str):
-        val_list = [val_list]
-    if not isinstance(val_list, list):
-        val_list = []
-    normalized = []
-    valid_set = {v.lower(): v for v in valid_list}
-    for p in val_list:
-        if not isinstance(p, str):
-            continue
-        p_clean = p.strip().lower()
-        if p_clean in valid_set:
-            normalized.append(valid_set[p_clean])
-        else:
-            # Fuzzy match for common LLM errors
-            for v in valid_list:
-                if p_clean == v.strip().lower():
-                    normalized.append(v)
-                    break
-    return normalized
+CHANNELS = ["Digital", "Branch", "Digital and Branch"]
+RISK_LEVELS = ['High', 'Medium', 'Low']
+INNOVATION_LEVELS = ['High', 'Medium', 'Low']
 
-def normalize_single_value(val, valid_list, default_val):
-    if not isinstance(val, str):
-        return default_val
-    val_clean = val.strip().lower()
-    valid_map = {v.lower(): v for v in valid_list}
-    if val_clean in valid_map:
-        return valid_map[val_clean]
-    for v in valid_list:
-        if val_clean == v.lower():
-            return v
-    return default_val
+def normalize_channels(ch_val):
+    if isinstance(ch_val, str):
+        if ch_val.lower() == "digital and branch":
+            return ["Digital", "Branch"]
+        return [ch_val]
+    if isinstance(ch_val, list):
+        out = []
+        for c in ch_val:
+            if c.lower() == "digital and branch":
+                out += ["Digital", "Branch"]
+            else:
+                out.append(c)
+        return sorted(list(set(out)))
+    return ["Digital"]
 
-def normalize_channel(val):
-    val = (val or "").strip().lower()
-    if val in ["digital", "digital only"]:
-        return "Digital"
-    if val in ["branch", "branch only"]:
-        return "Branch"
-    if val in ["digital and branch", "both", "both channels"]:
-        return "Both"
-    return "Digital"
+def get_filter_defaults(parsed):
+    seg = parsed.get('segment') or []
+    if isinstance(seg, str):
+        seg = [seg] if seg else []
+    sector = parsed.get('sector') or []
+    if isinstance(sector, str):
+        sector = [sector] if sector else []
+    promotion = parsed.get('promotion') or []
+    if isinstance(promotion, str):
+        promotion = [promotion] if promotion else []
+    channels = normalize_channels(parsed.get('channel'))
+    term = int(parsed.get('term') or 12)
+    risk_level = parsed.get('risk_level', 'Medium')
+    if risk_level not in RISK_LEVELS:
+        risk_level = 'Medium'
+    innovation_level = parsed.get('innovation_level', 'Medium')
+    if innovation_level not in INNOVATION_LEVELS:
+        innovation_level = 'Medium'
+    launch_year = int(parsed.get('launch_year', 2024) or 2024)
+    return seg, sector, promotion, channels, term, risk_level, innovation_level, launch_year
 
-def normalize_int(val, default):
-    try:
-        v = int(val)
-        if 1 <= v <= 60:
-            return v
-        else:
-            return default
-    except:
-        return default
+# ------ A/B TESTI ------
+if test_mode == "A/B Test":
+    st.header("A/B Test: Compare Two Product/Campaign Variants")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        user_input_a = st.text_area(
+            "Product/Campaign A",
+            height=80,
+            placeholder="Example: 24-month fixed interest consumer loan for retail sector SMEs with cashback and digital convenience promotions. Digital-only channel. High innovation level. Launch year:2024."
+        )
+        if st.button("Parse A"):
+            parsed_a = parse_with_mistral(user_input_a)
+            st.session_state['parsed_a'] = parsed_a
+            st.session_state['filters_a'] = None
+            st.session_state['run_a'] = False
+    with col_b:
+        user_input_b = st.text_area(
+            "Product/Campaign B",
+            height=80,
+            placeholder="Example: Retail sector SMEs with loyalty points and low commission promotions. Available both on digital and branch channels. Medium innovation level. Launch year:2024."
+        )
+        if st.button("Parse B"):
+            parsed_b = parse_with_mistral(user_input_b)
+            st.session_state['parsed_b'] = parsed_b
+            st.session_state['filters_b'] = None
+            st.session_state['run_b'] = False
 
-def normalize_year(val):
-    valid_years = [2020, 2021, 2022, 2023, 2024]
-    try:
-        y = int(val)
-        if y in valid_years:
-            return y
-        else:
-            return 2024
-    except:
-        return 2024
+    parsed_a_ok = 'parsed_a' in st.session_state and st.session_state['parsed_a'] is not None
+    parsed_b_ok = 'parsed_b' in st.session_state and st.session_state['parsed_b'] is not None
 
-def normalize_product_type(val):
-    # Her türlü POS vurgusunu veya karışıklığını yakala!
-    val = (val or "").strip().lower()
-    if "pos" in val:
-        return "POS"
-    # "loan" ifadesi varsa ve "pos" da varsa, yine POS
-    if "loan" in val and "pos" in val:
-        return "POS"
-    for option in PRODUCT_TYPES:
-        if val == option.lower():
-            return option
-    return PRODUCT_TYPES[0]  # default
+    if not (parsed_a_ok and parsed_b_ok):
+        st.info("Please enter product/campaign descriptions for both A and B, and click 'Parse A' & 'Parse B'.")
+    else:
+        st.markdown("### Edit & Confirm Filters for Both A and B")
+        col_a, col_b = st.columns(2)
 
-# ----------- SESSION STATE INIT -----------
+        # --- FILTERS FOR A ---
+        with col_a:
+            st.markdown("#### Filters for A")
+            filters_a = st.session_state.get('filters_a')
+            if filters_a is None:
+                seg, sector, promotion, channels, term, risk_level, innovation_level, launch_year = get_filter_defaults(st.session_state['parsed_a'])
+            else:
+                seg = filters_a.get('segment', [])
+                sector = filters_a.get('sector', [])
+                promotion = filters_a.get('promotion', [])
+                channels = filters_a.get('channel', ["Digital"])
+                term = filters_a.get('term', 12)
+                risk_level = filters_a.get('risk_level', 'Medium')
+                innovation_level = filters_a.get('innovation_level', 'Medium')
+                launch_year = filters_a.get('launch_year', 2024)
+            filters_a = {}
+            filters_a['segment'] = st.multiselect("Segment (A)", ['Individual', 'SME', 'Corporate'], default=seg)
+            filters_a['sector'] = st.multiselect("Sector (A)", SECTOR_LIST, default=sector)
+            filters_a['promotion'] = st.multiselect("Promotion (A)", PROMOTIONS, default=promotion)
+            filters_a['channel'] = st.multiselect("Channel (A)", ["Digital", "Branch", "Digital and Branch"], default=channels)
+            filters_a['term'] = st.slider("Term (A, Months)", 1, 60, value=term)
+            filters_a['risk_level'] = st.radio("Risk Level (A)", RISK_LEVELS, index=RISK_LEVELS.index(risk_level))
+            filters_a['innovation_level'] = st.radio("Innovation Level (A)", INNOVATION_LEVELS, index=INNOVATION_LEVELS.index(innovation_level))
+            filters_a['launch_year'] = st.selectbox("Launch Year (A)", [2020, 2021, 2022, 2023, 2024], index=[2020,2021,2022,2023,2024].index(launch_year))
+            st.session_state['filters_a'] = filters_a
 
-if 'parsed' not in st.session_state:
-    st.session_state['parsed'] = None
-if 'run_simulation' not in st.session_state:
-    st.session_state['run_simulation'] = False
-if 'filters' not in st.session_state:
-    st.session_state['filters'] = {}
+        # --- FILTERS FOR B ---
+        with col_b:
+            st.markdown("#### Filters for B")
+            filters_b = st.session_state.get('filters_b')
+            if filters_b is None:
+                seg, sector, promotion, channels, term, risk_level, innovation_level, launch_year = get_filter_defaults(st.session_state['parsed_b'])
+            else:
+                seg = filters_b.get('segment', [])
+                sector = filters_b.get('sector', [])
+                promotion = filters_b.get('promotion', [])
+                channels = filters_b.get('channel', ["Digital"])
+                term = filters_b.get('term', 12)
+                risk_level = filters_b.get('risk_level', 'Medium')
+                innovation_level = filters_b.get('innovation_level', 'Medium')
+                launch_year = filters_b.get('launch_year', 2024)
+            filters_b = {}
+            filters_b['segment'] = st.multiselect("Segment (B)", ['Individual', 'SME', 'Corporate'], default=seg)
+            filters_b['sector'] = st.multiselect("Sector (B)", SECTOR_LIST, default=sector)
+            filters_b['promotion'] = st.multiselect("Promotion (B)", PROMOTIONS, default=promotion)
+            filters_b['channel'] = st.multiselect("Channel (B)", ["Digital", "Branch", "Digital and Branch"], default=channels)
+            filters_b['term'] = st.slider("Term (B, Months)", 1, 60, value=term)
+            filters_b['risk_level'] = st.radio("Risk Level (B)", RISK_LEVELS, index=RISK_LEVELS.index(risk_level))
+            filters_b['innovation_level'] = st.radio("Innovation Level (B)", INNOVATION_LEVELS, index=INNOVATION_LEVELS.index(innovation_level))
+            filters_b['launch_year'] = st.selectbox("Launch Year (B)", [2020, 2021, 2022, 2023, 2024], index=[2020,2021,2022,2023,2024].index(launch_year))
+            st.session_state['filters_b'] = filters_b
 
-# ----------- CHATBOT INPUT -----------
+        if st.button("Run A/B Simulation"):
+            st.session_state['run_a'] = True
+            st.session_state['run_b'] = True
 
-st.header("💬 Digital Twin Chatbot Assistant")
+        if st.session_state.get('run_a', False) and st.session_state.get('run_b', False):
+            n_individual, n_sme, n_corporate = 650, 220, 130
+            df_customers = generate_customers(n_individual, n_sme, n_corporate)
+            df_transactions = generate_transactions(df_customers, months=6, max_sample=15000)
 
-user_input = st.text_area(
-    "Describe your product/campaign below. The AI assistant will extract relevant filters and you can further edit them.",
-    placeholder="Example: 18-month fixed interest POS loan for textile SMEs with cashback and loyalty program.",
-    height=100
-)
+            # A
+            filters_a = st.session_state['filters_a']
+            df_main_a = aggregate_transactions(df_customers, df_transactions)
+            df_main_a['product_score'] = df_main_a.apply(lambda row: product_effect_score(row, filters_a), axis=1)
+            proba_a = train_model(df_main_a, "RandomForest")
+            df_main_a['product_interest_probability'] = proba_a * df_main_a['product_score']
+            df_main_a['twin_response'] = df_main_a['product_interest_probability'].apply(lambda x:
+                'apply/purchase' if x > 0.78 else
+                'high interest' if x > 0.55 else
+                'medium interest' if x > 0.35 else
+                'neutral' if x > 0.18 else
+                'negative response'
+            )
 
-if st.button("Ask Bot"):
-    if user_input.strip() == "":
-        st.warning("Please enter a product/campaign description.")
-        st.stop()
-    parsed = parse_with_mistral(user_input)
-    st.session_state['parsed'] = parsed
-    st.session_state['run_simulation'] = False
-    st.session_state['filters'] = {}
+            # B
+            filters_b = st.session_state['filters_b']
+            df_main_b = aggregate_transactions(df_customers, df_transactions)
+            df_main_b['product_score'] = df_main_b.apply(lambda row: product_effect_score(row, filters_b), axis=1)
+            proba_b = train_model(df_main_b, "RandomForest")
+            df_main_b['product_interest_probability'] = proba_b * df_main_b['product_score']
+            df_main_b['twin_response'] = df_main_b['product_interest_probability'].apply(lambda x:
+                'apply/purchase' if x > 0.78 else
+                'high interest' if x > 0.55 else
+                'medium interest' if x > 0.35 else
+                'neutral' if x > 0.18 else
+                'negative response'
+            )
 
-# ----------- FILTERS SECTION -----------
+            st.markdown("### A/B Results Visualization")
+            col1, col2 = st.columns(2)
+            with col1:
+                plot_pie_twin_response(df_main_a, variant_label="A")
+                plot_twin_distribution(df_main_a, variant_label="A")
+                plot_segment_heatmap(df_main_a, variant_label="A")
+                plot_sector_heatmap(df_main_a, variant_label="A")
+                plot_segment_interest_heatmap(df_main_a, variant_label="A")
+            with col2:
+                plot_pie_twin_response(df_main_b, variant_label="B")
+                plot_twin_distribution(df_main_b, variant_label="B")
+                plot_segment_heatmap(df_main_b, variant_label="B")
+                plot_sector_heatmap(df_main_b, variant_label="B")
+                plot_segment_interest_heatmap(df_main_b, variant_label="B")
 
-if st.session_state['parsed'] is not None:
-    parsed = st.session_state['parsed']
+# ------ SINGLE SCENARIO ------
+if test_mode == "Single Scenario":
+    st.header("Single Scenario Test")
+    user_input = st.text_area(
+        "Describe your product/campaign below.",
+        placeholder="Example: 18-month fixed interest POS loan for textile SMEs with cashback and loyalty program.",
+        height=100
+    )
 
-    segments_raw = st.session_state['filters'].get('segment', parsed.get('segment', []))
-    segments = normalize_list_value(segments_raw, ['Individual', 'SME', 'Corporate'])
+    if st.button("Ask Bot"):
+        if user_input.strip() == "":
+            st.warning("Please enter a product/campaign description.")
+            st.stop()
+        parsed = parse_with_mistral(user_input)
+        st.session_state['parsed'] = parsed
+        st.session_state['filters'] = None
+        st.session_state['run_simulation'] = False
 
-    sectors_raw = st.session_state['filters'].get('sector', parsed.get('sector', []))
-    sectors = normalize_list_value(sectors_raw, SECTOR_LIST)
+    filters = st.session_state.get('filters')
+    if filters is None and 'parsed' in st.session_state and st.session_state['parsed'] is not None:
+        filters = dict(st.session_state['parsed'])
+    elif filters is None:
+        filters = {}
 
-    product_type_raw = st.session_state['filters'].get('product_type', parsed.get('product_type', PRODUCT_TYPES[0]))
-    product_type = normalize_product_type(product_type_raw)
+    seg = filters.get('segment') or []
+    if isinstance(seg, str):
+        seg = [seg] if seg else []
+    sector = filters.get('sector') or []
+    if isinstance(sector, str):
+        sector = [sector] if sector else []
+    promotion = filters.get('promotion') or []
+    if isinstance(promotion, str):
+        promotion = [promotion] if promotion else []
+    channels = normalize_channels(filters.get('channel'))
+    term = int(filters.get('term') or 12)
+    risk_level = filters.get('risk_level', 'Medium')
+    if risk_level not in RISK_LEVELS:
+        risk_level = 'Medium'
+    innovation_level = filters.get('innovation_level', 'Medium')
+    if innovation_level not in INNOVATION_LEVELS:
+        innovation_level = 'Medium'
+    launch_year = int(filters.get('launch_year', 2024) or 2024)
 
-    product_category_raw = st.session_state['filters'].get('product_category', parsed.get('product_category', PRODUCT_CATEGORIES[0]))
-    product_category = normalize_single_value(product_category_raw, PRODUCT_CATEGORIES, PRODUCT_CATEGORIES[0])
+    filters['segment'] = st.multiselect("Segment", ['Individual', 'SME', 'Corporate'], default=seg)
+    filters['sector'] = st.multiselect("Sector", SECTOR_LIST, default=sector)
+    filters['promotion'] = st.multiselect("Promotion", PROMOTIONS, default=promotion)
+    filters['channel'] = st.multiselect("Channel", CHANNELS, default=channels)
+    filters['term'] = st.slider("Term (Months)", 1, 60, value=term)
+    filters['risk_level'] = st.radio("Risk Level", RISK_LEVELS, index=RISK_LEVELS.index(risk_level))
+    filters['innovation_level'] = st.radio("Innovation Level", INNOVATION_LEVELS, index=INNOVATION_LEVELS.index(innovation_level))
+    filters['launch_year'] = st.selectbox("Launch Year", [2020, 2021, 2022, 2023, 2024], index=[2020,2021,2022,2023,2024].index(launch_year))
 
-    promotions_raw = st.session_state['filters'].get('promotion', parsed.get('promotion', []))
-    promotions = normalize_list_value(promotions_raw, PROMOTIONS)
-
-    channel_raw = st.session_state['filters'].get('channel', parsed.get('channel', "Digital"))
-    channel = normalize_channel(channel_raw)
-
-    term_raw = st.session_state['filters'].get('term', parsed.get('term', 12))
-    term = normalize_int(term_raw, 12)
-
-    interest_type_raw = st.session_state['filters'].get('interest_type', parsed.get('interest_type', 'Fixed'))
-    interest_type = normalize_single_value(interest_type_raw, ['Fixed', 'Variable', 'None'], 'Fixed')
-
-    risk_level_raw = st.session_state['filters'].get('risk_level', parsed.get('risk_level', 'Medium'))
-    risk_level = normalize_single_value(risk_level_raw, ['High', 'Medium', 'Low'], 'Medium')
-
-    innovation_level_raw = st.session_state['filters'].get('innovation_level', parsed.get('innovation_level', 'Medium'))
-    innovation_level = normalize_single_value(innovation_level_raw, ['High', 'Medium', 'Low'], 'Medium')
-
-    launch_year_raw = st.session_state['filters'].get('launch_year', parsed.get('launch_year', 2024))
-    launch_year = normalize_year(launch_year_raw)
-
-    segment = st.multiselect("Segment", ['Individual', 'SME', 'Corporate'], default=segments)
-    sector = st.multiselect("Sector", SECTOR_LIST, default=sectors)
-    product_type = st.selectbox("Product Type", PRODUCT_TYPES, index=PRODUCT_TYPES.index(product_type))
-    product_category = st.selectbox("Product Category", PRODUCT_CATEGORIES, index=PRODUCT_CATEGORIES.index(product_category))
-    promotion = st.multiselect("Promotion", PROMOTIONS, default=promotions)
-    channel = st.selectbox("Channel", ["Digital", "Branch", "Both"], index=["Digital", "Branch", "Both"].index(channel))
-    term = st.slider("Term (Months)", 1, 60, value=term)
-    interest_type = st.selectbox("Interest Type", ['Fixed', 'Variable', 'None'], index=['Fixed', 'Variable', 'None'].index(interest_type))
-    risk_level = st.radio("Risk Level", ['High', 'Medium', 'Low'], index=['High', 'Medium', 'Low'].index(risk_level))
-    innovation_level = st.radio("Innovation Level", ['High', 'Medium', 'Low'], index=['High', 'Medium', 'Low'].index(innovation_level))
-    launch_year = st.selectbox("Launch Year", [2020, 2021, 2022, 2023, 2024], index=[2020, 2021, 2022, 2023, 2024].index(launch_year))
-
-    st.session_state['filters'] = {
-        'segment': segment,
-        'sector': sector,
-        'product_type': product_type,
-        'product_category': product_category,
-        'promotion': promotion,
-        'channel': channel,
-        'term': term,
-        'interest_type': interest_type,
-        'risk_level': risk_level,
-        'innovation_level': innovation_level,
-        'launch_year': launch_year,
-    }
-
-    st.info("Edit any filter if you want, then click **Run Simulation** below!")
+    st.session_state['filters'] = filters
 
     if st.button("Run Simulation"):
         st.session_state['run_simulation'] = True
 
-# ----------- SIMULATION AND VISUALS -----------
-
-if st.session_state['run_simulation'] and st.session_state['filters']:
-    filters = st.session_state['filters']
-
-    n_individual, n_sme, n_corporate = 650, 220, 130
-    df_customers = generate_customers(n_individual, n_sme, n_corporate)
-    df_transactions = generate_transactions(df_customers, months=6, max_sample=15000)
-    df_main = aggregate_transactions(df_customers, df_transactions)
-
-    def product_effect_score(row):
-        score = 1
-        if row['segment'] not in filters['segment']: score *= 0.8
-        if row['segment'] in ['SME', 'Corporate']:
-            if row['sector'] not in filters['sector']: score *= 0.85
-        if row['segment'] == 'Individual' and row['category'] not in INDIVIDUAL_CATEGORIES: score *= 0.85
-        if filters['channel'] == "Digital" and row['digital_openness'] < 0.4: score *= 0.7
-        if "Cashback" in filters['promotion'] and row['promotion_sensitivity'] > 0.5: score *= 1.12
-        if "Digital Convenience" in filters['promotion'] and row['digital_openness'] > 0.7: score *= 1.10
-        if filters['innovation_level'] == 'High' and row['innovation_openness'] > 0.7: score *= 1.08
-        if filters['risk_level'] == 'High': score *= 0.85
-        if filters['term'] > 36: score *= 0.92
-        if filters['launch_year'] == 2024: score *= 1.06
-        if row['tx_category_count'] > 8: score *= 1.04
-        return score
-
-    def twin_response_func(x):
-        if x > 0.78: return 'apply/purchase'
-        elif x > 0.55: return 'high interest'
-        elif x > 0.35: return 'medium interest'
-        elif x > 0.18: return 'neutral'
-        else: return 'negative response'
-
-    proba = train_model(df_main, "RandomForest")
-    df_main = df_main.copy()
-    df_main['product_score'] = df_main.apply(product_effect_score, axis=1)
-    df_main['product_interest_probability'] = proba * df_main['product_score']
-    df_main['twin_response'] = df_main['product_interest_probability'].apply(twin_response_func)
-
-    st.subheader("First 100 Customers' Simulation Results")
-    st.dataframe(df_main[['customer_id', 'segment', 'sector', 'category', 'avg_amount', 'tx_category_count', 'twin_response', 'product_interest_probability']].head(100))
-
-    st.subheader("Twin Response Distribution")
-    plot_twin_distribution(df_main)
-
-    st.subheader("Twin Response (Pie Chart)")
-    plot_pie_twin_response(df_main)
-
-    st.subheader("Segment-based Twin Response Heatmap")
-    plot_segment_heatmap(df_main)
-
-    st.subheader("Sector-based Twin Response Heatmap")
-    plot_sector_heatmap(df_main)
-
-    st.subheader("Mean Product Interest Score by Segment/Response (Heatmap)")
-    plot_segment_interest_heatmap(df_main)
-
-    st.subheader("Individual Twin Analysis Panel")
-    selected_customer = st.selectbox("Select a customer", df_main['customer_id'].sample(n=50, random_state=42).tolist())
-    st.write(df_main[df_main['customer_id'] == selected_customer].T)
+    if st.session_state.get('run_simulation', False) and st.session_state['filters']:
+        filters = st.session_state['filters']
+        n_individual, n_sme, n_corporate = 650, 220, 130
+        df_customers = generate_customers(n_individual, n_sme, n_corporate)
+        df_transactions = generate_transactions(df_customers, months=6, max_sample=15000)
+        df_main = aggregate_transactions(df_customers, df_transactions)
+        df_main['product_score'] = df_main.apply(lambda row: product_effect_score(row, filters), axis=1)
+        proba = train_model(df_main, "RandomForest")
+        df_main['product_interest_probability'] = proba * df_main['product_score']
+        df_main['twin_response'] = df_main['product_interest_probability'].apply(lambda x:
+            'apply/purchase' if x > 0.78 else
+            'high interest' if x > 0.55 else
+            'medium interest' if x > 0.35 else
+            'neutral' if x > 0.18 else
+            'negative response'
+        )
+        st.subheader("Results")
+        plot_pie_twin_response(df_main, variant_label="A")
+        plot_twin_distribution(df_main, variant_label="A")
+        plot_segment_heatmap(df_main, variant_label="A")
+        plot_sector_heatmap(df_main, variant_label="A")
+        plot_segment_interest_heatmap(df_main, variant_label="A")
